@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oscilloscope Render</title>
+<style>
+:root{
+    --bg:#000502;
+    --panel:rgba(10, 16, 12, 0.9);
+    --accent:#00ff66;
+    --text:#ffffff;
+    --alert:#ff3333;
+}
+body, html {
+    margin:0;
+    padding:0;
+    width: 100%;
+    height: 100%;
+    background:var(--bg);
+    color:var(--text);
+    font-family:sans-serif;
+    overflow: hidden;
+}
+canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: contain;
+    z-index: 1;
+}
+header {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 10;
+    background:var(--panel);
+    padding:12px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    align-items:center;
+    border: 1px solid #142c1b;
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    max-height: 25vh;
+    overflow-y: auto;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+header.hidden-ui, .seekbar-container.hidden-ui {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateY(-10px);
+}
+.seekbar-container.hidden-ui {
+    transform: translateY(10px);
+}
+button, input, select {
+    cursor:pointer;
+    background:#0d1a10;
+    color:#fff;
+    border:1px solid #1f3a25;
+    padding:5px 10px;
+    border-radius:3px;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+button:hover {
+    background:#18331f;
+}
+button.recording {
+    background: var(--alert);
+    border-color: #ff6666;
+    animation: blink 1.5s infinite;
+}
+@keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
+}
+#drop {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    border: 2px dashed #1f3a25;
+    padding: 40px;
+    text-align: center;
+    border-radius: 10px;
+    background: rgba(0,255,102,0.01);
+    pointer-events: none;
+    color: #5c8065;
+}
+.stat {
+    font-size: 12px;
+    color: var(--accent);
+}
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+}
+.file-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-right: 1px solid #1f3a25;
+    padding-right: 10px;
+}
+.file-group label {
+    font-size: 10px;
+    color: #88a890;
+}
+.seekbar-container {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel);
+    padding: 8px 12px;
+    box-sizing: border-box;
+    border: 1px solid #142c1b;
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+#seekBar {
+    flex: 1;
+    accent-color: var(--accent);
+}
+#uiHint {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 2;
+    font-size: 11px;
+    color: rgba(0, 255, 102, 0.3);
+    pointer-events: none;
+    display: none;
+}
+</style>
+</head>
+<body>
+
+<div id="uiHint">画面クリックまたはEscキーでUIを再表示</div>
+
+<header id="controlsHeader">
+    <div class="file-group">
+        <label for="fileArt">Art</label>
+        <input type="file" id="fileArt" accept=".wav,.mp3,.flac,.m4a">
+    </div>
+    <div class="file-group">
+        <label for="fileBgm">(Option) BGM</label>
+        <input type="file" id="fileBgm" accept=".wav,.mp3,.flac,.m4a">
+    </div>
+
+    <button id="playBtn">Play</button>
+    <button id="stopBtn">Stop</button>
+    <button id="renderBtn" style="color: #00ff66; font-weight: bold;">Render (.webm, 60fps)</button>
+
+    <div class="control-group">
+        <label for="drawMode">Mode</label>
+        <select id="drawMode" data-config>
+            <option value="line">Line</option>
+            <option value="dot">Dot</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>Points</label>
+        <input type="range" id="zoom" min="500" max="16000" step="100" value="4000" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>Density</label>
+        <select id="densityMultiplier" data-config>
+            <option value="1">x1</option>
+            <option value="2">x2</option>
+            <option value="3" selected>x3</option>
+            <option value="4">x4</option>
+            <option value="8">x8</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>Color Mode</label>
+        <select id="colorMode" data-config>
+            <option value="classic">Classic Green</option>
+            <option value="freq">Freq Spectrum</option>
+            <option value="dynamic">Sound Dynamic</option>
+            <option value="beatRainbow">Beat Rainbow</option>
+            <option value="cyber">Neon Cyber</option>
+            <option value="matrix">Matrix Code</option>
+            <option value="fire">Fire</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>LineWidth</label>
+        <input type="range" id="lineWidth" min="0.5" max="5.0" step="0.1" value="1.8" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>CRT Glow</label>
+        <input type="range" id="glow" min="0" max="15" step="1" value="6" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>Persist</label>
+        <input type="range" id="persist" min="0.01" max="0.5" step="0.01" value="0.25" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>Size</label>
+        <input type="range" id="scale" min="0.1" max="2.0" step="0.05" value="0.85" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>Rotation</label>
+        <input type="range" id="rotation" min="0" max="360" value="0" data-config>
+    </div>
+
+    <div class="control-group">
+        <label>Scroll</label>
+        <input type="range" id="scrollOffset" min="-4000" max="4000" step="5" value="0" data-config>
+    </div>
+
+    <div class="control-group">
+        <label><input type="checkbox" id="invertX" data-config> Invert X (左右反転)</label>
+    </div>
+    <div class="control-group">
+        <label><input type="checkbox" id="invertY" data-config> Invert Y (上下反転)</label>
+    </div>
+
+    <div class="control-group">
+        <label><input type="checkbox" id="autoCorrect" checked data-config> Phase Lock</label>
+    </div>
+
+
+    <div class="control-group">
+        <label><input type="checkbox" id="showGrid" checked data-config> Grid</label>
+    </div>
+
+    <button id="saveConfigBtn" style="color:#00ff66; border-color:#00ff66; background:rgba(0,255,102,0.05);">Save Config</button>
+    <button id="loadConfigBtn" style="color:#a3ffcc; border-color:#1f3a25;">Load Config</button>
+    <button id="resetConfigBtn" style="background: #261212; border-color: #4a1f1f; color:#ff9999;">Reset</button>
+     
+    <button id="hideUiBtn" style="background: #111; border-color: #444; color: #aaa;">Hide UI</button>
+
+    <div class="stat" id="info">No File</div>
+    <div class="stat" id="fpsInfo" style="margin-left: auto; font-family: monospace;">FPS: --</div>
+</header>
+
+<div class="seekbar-container" id="seekbarContainer">
+    <span id="timeCurrent">0:00</span>
+    <input type="range" id="seekBar" min="0" max="100" value="0" step="0.1">
+    <span id="timeTotal">0:00</span>
+</div>
+
+<div id="drop">.wav, .mp3, .flac, .m4a</div>
+
+<canvas id="scope"></canvas>
+
+<script>
+const canvas = document.getElementById("scope");
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, alpha: false });
+
+let audioContext = null;
+let audioDestination = null;
+
+let artBuffer = null;
+let rawDataL = null;
+let rawDataR = null;
+let currentArtSource = null;
+
+let bgmBuffer = null;
+let currentBgmSource = null;
+let masterBuffer = null;
+
+let analyserNode = null;
+let freqDataArray = null;
+
+let startTime = 0;
+let pauseOffset = 0;
+let isPlaying = false;
+let isUserSeeking = false;
+let lastLockedOffset = 0;
+
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+let beatHue = 0;
+let lastLowEnergy = 0;
+let beatThreshold = 0.15;
+
+let lastLoopTime = performance.now();
+const fpsInfo = document.getElementById("fpsInfo");
+
+const seekBar = document.getElementById("seekBar");
+const timeCurrent = document.getElementById("timeCurrent");
+const timeTotal = document.getElementById("timeTotal");
+const zoomSlider = document.getElementById("zoom");
+const persistSlider = document.getElementById("persist");
+const scaleSlider = document.getElementById("scale");
+const rotationSlider = document.getElementById("rotation");
+const scrollSlider = document.getElementById("scrollOffset");
+const invertXCheck = document.getElementById("invertX");
+const invertYCheck = document.getElementById("invertY");
+const autoCorrectCheck = document.getElementById("autoCorrect");
+const showGridCheck = document.getElementById("showGrid");
+const drawModeSelect = document.getElementById("drawMode");
+const renderBtn = document.getElementById("renderBtn");
+const densityMultiplier = document.getElementById("densityMultiplier");
+const glowSlider = document.getElementById("glow");
+const colorModeSelect = document.getElementById("colorMode");
+const lineWidthSlider = document.getElementById("lineWidth");
+
+const headerEl = document.getElementById("controlsHeader");
+const seekbarEl = document.getElementById("seekbarContainer");
+const uiHintEl = document.getElementById("uiHint");
+
+// --- WebGL シェーダーと初期化 ---
+
+const vsSource = `
+  attribute vec2 a_position;
+  uniform float u_scale;
+  uniform float u_rotation;
+  uniform vec2 u_invert;
+  uniform float u_pointSize;
+  uniform vec2 u_aspect;
+  
+  void main() {
+      float c = cos(u_rotation);
+      float s = sin(u_rotation);
+      vec2 pos = vec2(a_position.x * u_invert.x, a_position.y * u_invert.y);
+      vec2 rotated = vec2(pos.x * c - pos.y * s, pos.x * s + pos.y * c);
+      
+      gl_Position = vec4(rotated * u_scale * u_aspect, 0.0, 1.0);
+      gl_PointSize = u_pointSize;
+  }
+`;
+const fsSource = `
+  precision mediump float;
+  uniform vec3 u_color;
+  uniform int u_isPoint;
+  
+  void main() {
+      if (u_isPoint == 1) {
+          vec2 coord = gl_PointCoord - vec2(0.5);
+          if (length(coord) > 0.5) discard;
+      }
+      gl_FragColor = vec4(u_color, 1.0);
+  }
+`;
+
+const fadeVsSource = `
+  attribute vec2 a_position;
+  void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
+`;
+const fadeFsSource = `
+  precision mediump float;
+  uniform float u_persist;
+  void main() { gl_FragColor = vec4(0.0, 0.005, 0.001, 1.0 - u_persist); }
+`;
+
+// グリッド用シェーダー
+const gridVsSource = `
+  attribute vec2 a_position;
+  void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
+`;
+const gridFsSource = `
+  precision mediump float;
+  uniform vec2 u_resolution;
+  uniform vec2 u_aspect;
+  void main() {
+      // 画面中央からのアスペクト補正された座標
+      vec2 st = (gl_FragCoord.xy - u_resolution * 0.5) / min(u_resolution.x, u_resolution.y);
+      
+      // グリッドの間隔（0.2単位、10x10に近いマス目）
+      vec2 grid = abs(fract(st * 5.0 - 0.5) - 0.5) / (5.0 * 1.5 / min(u_resolution.x, u_resolution.y));
+      float lineX = smoothstep(1.0, 0.0, grid.x);
+      float lineY = smoothstep(1.0, 0.0, grid.y);
+      
+      // 中心線の強調
+      float axisX = smoothstep(1.5, 0.0, abs(st.x) / (1.0 / min(u_resolution.x, u_resolution.y)));
+      float axisY = smoothstep(1.5, 0.0, abs(st.y) / (1.0 / min(u_resolution.x, u_resolution.y)));
+      
+      float finalGrid = max(lineX, lineY) * 0.12 + max(axisX, axisY) * 0.25;
+      
+      // オシロスコープ風の淡い緑色
+      gl_FragColor = vec4(0.0, finalGrid, finalGrid * 0.4, 1.0);
+  }
+`;
+
+function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+    }
+    return shader;
+}
+
+const program = gl.createProgram();
+gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(program);
+
+const fadeProgram = gl.createProgram();
+gl.attachShader(fadeProgram, createShader(gl, gl.VERTEX_SHADER, fadeVsSource));
+gl.attachShader(fadeProgram, createShader(gl, gl.FRAGMENT_SHADER, fadeFsSource));
+gl.linkProgram(fadeProgram);
+
+const gridProgram = gl.createProgram();
+gl.attachShader(gridProgram, createShader(gl, gl.VERTEX_SHADER, gridVsSource));
+gl.attachShader(gridProgram, createShader(gl, gl.FRAGMENT_SHADER, gridFsSource));
+gl.linkProgram(gridProgram);
+
+const posLoc = gl.getAttribLocation(program, "a_position");
+const scaleLoc = gl.getUniformLocation(program, "u_scale");
+const rotLoc = gl.getUniformLocation(program, "u_rotation");
+const invertLoc = gl.getUniformLocation(program, "u_invert");
+const colorLoc = gl.getUniformLocation(program, "u_color");
+const isPointLoc = gl.getUniformLocation(program, "u_isPoint");
+const pointSizeLoc = gl.getUniformLocation(program, "u_pointSize");
+const aspectLoc = gl.getUniformLocation(program, "u_aspect");
+    
+const fadePosLoc = gl.getAttribLocation(fadeProgram, "a_position");
+const fadePersistLoc = gl.getUniformLocation(fadeProgram, "u_persist");
+
+const gridPosLoc = gl.getAttribLocation(gridProgram, "a_position");
+const gridResLoc = gl.getUniformLocation(gridProgram, "u_resolution");
+const gridAspectLoc = gl.getUniformLocation(gridProgram, "u_aspect");
+
+const positionBuffer = gl.createBuffer();
+let glDataArray = new Float32Array(0);
+let currentAllocatedPoints = 0; 
+
+const quadBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,  1, -1, -1,  1,
+    -1,  1,  1, -1,  1,  1
+]), gl.STATIC_DRAW);
+
+gl.enable(gl.BLEND);
+
+// --- MANUAL CONFIG SYSTEM ---
+const STORAGE_KEY = "xy_scope_manual_config";
+
+function saveConfig() {
+    const config = {};
+    document.querySelectorAll("[data-config]").forEach(el => {
+        config[el.id] = el.type === "checkbox" ? el.checked : el.value;
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    const saveBtn = document.getElementById("saveConfigBtn");
+    const originalText = saveBtn.textContent;
+    saveBtn.textContent = "Saved! ✔";
+    setTimeout(() => { saveBtn.textContent = originalText; }, 1200);
+}
+
+function loadConfig() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+    try {
+        const config = JSON.parse(saved);
+        Object.keys(config).forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                if (el.type === "checkbox") el.checked = config[id];
+                else el.value = config[id];
+            }
+        });
+    } catch (e) { console.error("Config load error", e); }
+}
+
+loadConfig();
+
+document.getElementById("saveConfigBtn").onclick = saveConfig;
+document.getElementById("loadConfigBtn").onclick = () => {
+    loadConfig();
+    const loadBtn = document.getElementById("loadConfigBtn");
+    const originalText = loadBtn.textContent;
+    loadBtn.textContent = "Loaded! ↺";
+    setTimeout(() => { loadBtn.textContent = originalText; }, 1200);
+};
+
+document.getElementById("resetConfigBtn").onclick = () => {
+    if(confirm("Reset")) {
+        localStorage.removeItem(STORAGE_KEY);
+        location.reload();
+    }
+};
+
+// --- UI TOGGLE SYSTEM ---
+function setUiVisibility(visible) {
+    if (visible) {
+        headerEl.classList.remove("hidden-ui");
+        seekbarEl.classList.remove("hidden-ui");
+        uiHintEl.style.display = "none";
+    } else {
+        headerEl.classList.add("hidden-ui");
+        seekbarEl.classList.add("hidden-ui");
+        uiHintEl.style.display = "block";
+    }
+}
+
+document.getElementById("hideUiBtn").onclick = (e) => {
+    e.stopPropagation();
+    setUiVisibility(false);
+};
+
+window.addEventListener("click", () => { if (headerEl.classList.contains("hidden-ui")) setUiVisibility(true); });
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") setUiVisibility(true); });
+
+function formatTime(seconds) {
+    if (isNaN(seconds)) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+}
+
+function hsvToRgb(h, s, v) {
+    let r, g, b, i, f, p, q, t;
+    h /= 360;
+    i = Math.floor(h * 6);
+    f = h * 6 - i;
+    p = v * (1 - s);
+    q = v * (1 - f * s);
+    t = v * (1 - (1 - f) * s);
+    switch (i % 6) {
+        case 0: r = v, g = t, b = p; break;
+        case 1: r = q, g = v, b = p; break;
+        case 2: r = p, g = v, b = t; break;
+        case 3: r = p, g = q, b = v; break;
+        case 4: r = t, g = p, b = v; break;
+        case 5: r = v, g = p, b = q; break;
+    }
+    return [r, g, b];
+}
+
+function mix(x, y, a) { return x * (1 - a) + y * a; }
+
+// --- メイン描画ループ (WebGL版) ---
+function drawWave() {
+    setTimeout(drawWave, 0);
+    
+    const nowMaster = performance.now();
+    const elapsed = nowMaster - lastLoopTime;
+    lastLoopTime = nowMaster;
+    const currentFps = 1000 / elapsed;
+    if (Math.random() < 0.1) {
+        fpsInfo.textContent = `FPS: ${currentFps.toFixed(1)}`;
+    }
+    
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.floor(window.innerWidth * dpr);
+    const targetHeight = Math.floor(window.innerHeight * dpr);
+    
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+
+    // 1. 残像処理
+    gl.useProgram(fadeProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(fadePosLoc);
+    gl.vertexAttribPointer(fadePosLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform1f(fadePersistLoc, Number(persistSlider.value));
+    
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    let aspectX = 1.0;
+    let aspectY = 1.0;
+    if (canvas.width > canvas.height) {
+        aspectX = canvas.height / canvas.width;
+    } else {
+        aspectY = canvas.width / canvas.height;
+    }
+
+    // グリッドの描画 (残像の上に加算/合成)
+    if (showGridCheck.checked) {
+        gl.useProgram(gridProgram);
+        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+        gl.enableVertexAttribArray(gridPosLoc);
+        gl.vertexAttribPointer(gridPosLoc, 2, gl.FLOAT, false, 0, 0);
+        gl.uniform2f(gridResLoc, canvas.width, canvas.height);
+        gl.uniform2f(gridAspectLoc, aspectX, aspectY);
+        
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    if (!rawDataL || !rawDataR || !masterBuffer) return;
+
+    if (isPlaying && audioContext && !isUserSeeking) {
+        pauseOffset = audioContext.currentTime - startTime;
+        if (pauseOffset >= masterBuffer.duration) {
+            pauseOffset = 0;
+            isPlaying = false;
+            stopAudio();
+            if (isRecording) toggleRecording(); 
+        } else {
+            seekBar.value = pauseOffset;
+            timeCurrent.textContent = formatTime(pauseOffset);
+        }
+    }
+
+    const sampleRate = artBuffer.sampleRate;
+    let basePoints = Number(zoomSlider.value); 
+    const scroll = Number(scrollSlider.value);
+
+    let targetOffset = Math.floor(pauseOffset * sampleRate) + scroll;
+    let startOffset = targetOffset;
+
+    if (targetOffset < rawDataL.length - basePoints * 2) {
+        for (let i = targetOffset; i < targetOffset + 1500; i++) {
+            if (rawDataL[i] <= 0 && rawDataL[i+1] > 0) {
+                startOffset = i;
+                break;
+            }
+        }
+    }
+
+    if (autoCorrectCheck.checked && lastLockedOffset > 0 && isPlaying) {
+        let expectedOffset = lastLockedOffset + Math.round((startOffset - lastLockedOffset) / basePoints) * basePoints;
+        if (Math.abs(startOffset - expectedOffset) < basePoints * 0.4) {
+            startOffset = expectedOffset;
+        }
+    }
+    lastLockedOffset = startOffset;
+    if(startOffset < 0) startOffset = 0;
+
+    // 2. 音声データのWebGL用配列詰め込み
+    const densityMult = parseInt(densityMultiplier.value);
+    const numPoints = basePoints * densityMult;
+    
+    if (glDataArray.length !== numPoints * 2) {
+        glDataArray = new Float32Array(numPoints * 2);
+    }
+
+    let maxAmp = 0;
+    let lowEnergy = 0;
+    const invDensity = 1 / densityMult;
+
+    for (let i = 0; i < numPoints; i++) {
+        const currentPos = i * invDensity;
+        const idxA = startOffset + (currentPos | 0);
+        const idxB = idxA + 1;
+        if (idxB >= rawDataL.length) break;
+
+        const t = currentPos - (currentPos | 0);
+        const sL = rawDataL[idxA] + (rawDataL[idxB] - rawDataL[idxA]) * t;
+        const sR = rawDataR[idxA] + (rawDataR[idxB] - rawDataR[idxA]) * t;
+
+        glDataArray[i * 2] = sL;
+        glDataArray[i * 2 + 1] = sR;
+
+        if (i % (4 * densityMult) === 0) {
+            let maxVal = Math.max(Math.abs(sL), Math.abs(sR));
+            if (maxVal > maxAmp) maxAmp = maxVal;
+            let diff = Math.abs(rawDataL[idxB] - rawDataL[idxA]);
+            if (diff < 0.05) lowEnergy += Math.abs(sL);
+        }
+    }
+    lowEnergy = lowEnergy / (basePoints / 4);
+
+    if (lowEnergy - lastLowEnergy > beatThreshold && isPlaying) { beatHue = (beatHue + 45) % 360; } 
+    else { beatHue = (beatHue + 0.5) % 360; }
+    lastLowEnergy = lowEnergy;
+
+    // 帯域解析
+    let lowBand = 0, midBand = 0, highBand = 0;
+    if (analyserNode && isPlaying) {
+        analyserNode.getByteFrequencyData(freqDataArray);
+        const len = freqDataArray.length;
+        for(let i=0; i<len; i++) {
+            if(i < len * 0.15) lowBand += freqDataArray[i];
+            else if(i < len * 0.6) midBand += freqDataArray[i];
+            else highBand += freqDataArray[i];
+        }
+        lowBand /= (len * 0.15 * 255); 
+        midBand /= (len * 0.45 * 255); 
+        highBand /= (len * 0.4 * 255);
+    } else {
+        lowBand = maxAmp; midBand = maxAmp * 0.8; highBand = maxAmp * 0.5;
+    }
+
+    // 3. WebGL描画
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    
+    if (currentAllocatedPoints !== numPoints) {
+        gl.bufferData(gl.ARRAY_BUFFER, glDataArray, gl.DYNAMIC_DRAW);
+        currentAllocatedPoints = numPoints;
+    } else {
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, glDataArray);
+    }
+    
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    const angle = (parseInt(rotationSlider.value) * Math.PI) / 180;
+    gl.uniform1f(scaleLoc, Number(scaleSlider.value));
+    gl.uniform1f(rotLoc, angle);
+    gl.uniform2f(invertLoc, invertXCheck.checked ? -1 : 1, invertYCheck.checked ? -1 : 1);
+    gl.uniform1f(pointSizeLoc, Number(lineWidthSlider.value) * dpr);
+    gl.uniform2f(aspectLoc, aspectX, aspectY);
+
+    const drawMode = drawModeSelect.value;
+    gl.uniform1i(isPointLoc, drawMode === 'dot' ? 1 : 0);
+
+    // 色の計算・反映
+    const selectedColorMode = colorModeSelect.value;
+    let r = 0.64, g = 1.0, b = 0.8; 
+
+    if (selectedColorMode === 'freq') {
+        r = Math.min(1.0, lowBand * 2.0); 
+        g = Math.min(1.0, midBand * 1.8); 
+        b = Math.min(1.0, highBand * 2.5);
+        if(r<0.05 && g<0.05 && b<0.05) { r=0.0; g=0.2; b=0.05; }
+    } else if (selectedColorMode === 'dynamic') {
+        const hue = Math.max(0, 240 - (maxAmp * 240));
+        [r, g, b] = hsvToRgb(hue, 1.0, 0.8);
+    } else if (selectedColorMode === 'beatRainbow') {
+        [r, g, b] = hsvToRgb(beatHue, 1.0, 0.8);
+    } else if (selectedColorMode === 'cyber') {
+        [r, g, b] = hsvToRgb((lowBand * 720) % 360, 1.0, 0.8);
+        r = mix(1.0, r, 0.5); g = mix(0.0, g, 0.5); b = mix(0.4, b, 0.5);
+    } else if (selectedColorMode === 'matrix') {
+        r = 0.0; g = Math.min(1.0, 0.5 + midBand * 0.5); b = 0.1;
+    } else if (selectedColorMode === 'fire') {
+        r = Math.min(1.0, 0.6 + maxAmp * 0.6); 
+        g = Math.min(1.0, maxAmp * 0.9); 
+        b = 0.0;
+    }
+
+    gl.uniform3f(colorLoc, r, g, b);
+
+    // 加算合成
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+    const glDrawMode = drawMode === 'line' ? gl.LINE_STRIP : gl.POINTS;
+    gl.drawArrays(glDrawMode, 0, numPoints);
+}
+
+function initAudioContext() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioDestination = audioContext.createMediaStreamDestination();
+        
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 512;
+        freqDataArray = new Uint8Array(analyserNode.frequencyBinCount);
+    }
+}
+
+async function processFile(file) {
+    initAudioContext();
+    const buf = await file.arrayBuffer();
+    return await audioContext.decodeAudioData(buf);
+}
+
+async function loadArtFile(file) {
+    try {
+        artBuffer = await processFile(file);
+        rawDataL = artBuffer.getChannelData(0);
+        rawDataR = artBuffer.numberOfChannels > 1 ? artBuffer.getChannelData(1) : artBuffer.getChannelData(0);
+        
+        if (!bgmBuffer) {
+            masterBuffer = artBuffer;
+            updateSeekBarConfig();
+        }
+        updateStatusText();
+        document.getElementById("drop").style.display = "none";
+    } catch (e) { alert("Failed (Art)"); }
+}
+
+async function loadBgmFile(file) {
+    try {
+        bgmBuffer = await processFile(file);
+        masterBuffer = bgmBuffer;
+        updateSeekBarConfig();
+        updateStatusText();
+        document.getElementById("drop").style.display = "none";
+    } catch (e) { alert("Failed (BGM)"); }
+}
+
+function updateSeekBarConfig() {
+    if (!masterBuffer) return;
+    pauseOffset = 0;
+    lastLockedOffset = 0;
+    stopAudio();
+    
+    seekBar.max = masterBuffer.duration;
+    seekBar.value = 0;
+    timeCurrent.textContent = "0:00";
+    timeTotal.textContent = formatTime(masterBuffer.duration);
+}
+
+function updateStatusText() {
+    const artName = document.getElementById("fileArt").files[0]?.name || (artBuffer ? "Loaded" : "None");
+    const bgmName = document.getElementById("fileBgm").files[0]?.name || (bgmBuffer ? "Loaded" : "Same as Art");
+    document.getElementById("info").textContent = `Name: ${artName} | 🎵: ${bgmName}`;
+}
+
+async function playCurrentProcessedData(timeStamp = 0) {
+    if (!audioContext || !masterBuffer) return;
+    stopAudio();
+
+    if (artBuffer) {
+        currentArtSource = audioContext.createBufferSource();
+        currentArtSource.buffer = artBuffer;
+        
+        if (!bgmBuffer) {
+            currentArtSource.connect(analyserNode);
+            analyserNode.connect(audioContext.destination);
+            analyserNode.connect(audioDestination);
+        } else {
+            currentArtSource.connect(analyserNode);
+            try { analyserNode.disconnect(); } catch(e){}
+        }
+        currentArtSource.start(0, timeStamp);
+    }
+
+    if (bgmBuffer) {
+        currentBgmSource = audioContext.createBufferSource();
+        currentBgmSource.buffer = bgmBuffer;
+        currentBgmSource.connect(audioContext.destination);
+        currentBgmSource.connect(audioDestination);
+        if (!artBuffer) currentBgmSource.connect(analyserNode);
+        currentBgmSource.start(0, timeStamp);
+    }
+
+    startTime = audioContext.currentTime - timeStamp;
+    isPlaying = true;
+}
+
+function stopAudio() {
+    if (currentArtSource) { try { currentArtSource.stop(); } catch(e){} currentArtSource = null; }
+    if (currentBgmSource) { try { currentBgmSource.stop(); } catch(e){} currentBgmSource = null; }
+    isPlaying = false;
+    if (!isUserSeeking) {
+        seekBar.value = pauseOffset;
+        timeCurrent.textContent = formatTime(pauseOffset);
+    }
+}
+
+function toggleRecording() {
+    if (!masterBuffer) return;
+
+    if (!isRecording) {
+        recordedChunks = [];
+        const canvasStream = canvas.captureStream(60); 
+        const combinedStream = new MediaStream([
+            ...canvasStream.getVideoTracks(),
+            ...audioDestination.stream.getAudioTracks()
+        ]);
+
+        const options = { mimeType: 'video/webm;codecs=vp9,opus', videoBitsPerSecond: 8000000 };
+        try { mediaRecorder = new MediaRecorder(combinedStream, options); } 
+        catch(e) { mediaRecorder = new MediaRecorder(combinedStream, { videoBitsPerSecond: 8000000 }); }
+
+        mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `oscilloscope_render_${Date.now()}.webm`;
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+
+        mediaRecorder.start(10);
+        isRecording = true;
+        renderBtn.textContent = "Rendering...";
+        renderBtn.classList.add("recording");
+
+        playCurrentProcessedData(0);
+
+    } else {
+        mediaRecorder.stop();
+        isRecording = false;
+        renderBtn.textContent = "Render";
+        renderBtn.classList.remove("recording");
+        stopAudio();
+    }
+}
+
+seekBar.addEventListener("input", () => { isUserSeeking = true; timeCurrent.textContent = formatTime(seekBar.value); });
+seekBar.addEventListener("change", () => { isUserSeeking = false; pauseOffset = Number(seekBar.value); if (isPlaying) playCurrentProcessedData(pauseOffset); });
+
+document.getElementById("fileArt").addEventListener("change", e => { if (e.target.files[0]) loadArtFile(e.target.files[0]); });
+document.getElementById("fileBgm").addEventListener("change", e => { if (e.target.files[0]) loadBgmFile(e.target.files[0]); });
+
+document.getElementById("playBtn").onclick = () => { if (!masterBuffer) return; playCurrentProcessedData(pauseOffset); };
+document.getElementById("stopBtn").onclick = () => { pauseOffset = 0; stopAudio(); };
+
+renderBtn.onclick = toggleRecording;
+
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => { 
+    e.preventDefault(); 
+    const file = e.dataTransfer.files[0]; 
+    if (file) loadArtFile(file); 
+});
+
+drawWave();
+</script>
+</body>
+</html>
